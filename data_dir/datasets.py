@@ -387,6 +387,41 @@ def create_ppg_dataset(
     )
 
 
+def create_mafat_dataset(data_dir, stepsize, depth, include_time, T, *, key):
+    """Create a dataset from the MAFAT Radar Challenge data.
+
+    Binary classification: human (1) vs animal (0) from I/Q radar segments.
+    Data shape: (n_samples, seq_len, 2) where channels are real/imag parts.
+    """
+    mafat_dir = data_dir + "/processed/MAFAT/radar"
+    with open(mafat_dir + "/data.pkl", "rb") as f:
+        data = pickle.load(f)
+    with open(mafat_dir + "/labels.pkl", "rb") as f:
+        labels = pickle.load(f)
+
+    # One-hot encode binary labels (0=animal, 1=human)
+    onehot_labels = jnp.zeros((len(labels), len(jnp.unique(labels))))
+    onehot_labels = onehot_labels.at[jnp.arange(len(labels)), labels].set(1)
+
+    if include_time:
+        ts = (T / data.shape[1]) * jnp.repeat(
+            jnp.arange(data.shape[1])[None, :], data.shape[0], axis=0
+        )
+        data = jnp.concatenate([ts[:, :, None], data], axis=2)
+
+    return dataset_generator(
+        "mafat_radar",
+        data,
+        onehot_labels,
+        stepsize,
+        depth,
+        include_time,
+        T,
+        idxs=None,
+        key=key,
+    )
+
+
 def create_dataset(
     data_dir,
     name,
@@ -425,6 +460,10 @@ def create_dataset(
     elif name == "ppg":
         return create_ppg_dataset(
             data_dir, use_presplit, stepsize, depth, include_time, T, key=key
+        )
+    elif name == "mafat_radar":
+        return create_mafat_dataset(
+            data_dir, stepsize, depth, include_time, T, key=key
         )
     else:
         raise ValueError(f"Dataset {name} not found in UEA folder and not toy dataset")
