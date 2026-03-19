@@ -42,24 +42,36 @@ def save_pickle(obj, filename):
 # ---------------------------------------------------------------------------
 
 def load_data(file_path):
-    """Load MAFAT data by combining .pkl (I/Q data) and .csv (metadata).
+    """Load a MAFAT data file (pickle format, with or without extension).
+
+    Also loads the companion .csv metadata file if it exists.
 
     Mirrors the loading approach from the original challenge repo:
     https://github.com/expectopatronm/MAFAT-RADAR-Challenge/blob/master/my_utils/dataloader.py
 
     Args:
-        file_path: Base path without extension (e.g. "data_dir/raw/MAFAT/Training").
-                   Expects both file_path.pkl and file_path.csv to exist.
+        file_path: Path to the data file. Can be:
+                   - With extension: "data_dir/raw/MAFAT/training_set.pkl"
+                   - Without extension: "data_dir/raw/MAFAT/training_set"
+                   The .csv companion is loaded automatically if present.
 
     Returns:
         Dictionary with all fields as numpy arrays.
     """
-    pkl_path = file_path + ".pkl"
-    csv_path = file_path + ".csv"
+    # Resolve the actual pickle file path
+    if os.path.exists(file_path):
+        pkl_path = file_path
+    elif os.path.exists(file_path + ".pkl"):
+        pkl_path = file_path + ".pkl"
+    else:
+        raise FileNotFoundError(f"Cannot find data file: {file_path} or {file_path}.pkl")
 
     with open(pkl_path, "rb") as f:
         pkl_data = pickle.load(f)
 
+    # Try to load companion CSV metadata
+    base_no_ext = os.path.splitext(pkl_path)[0] if pkl_path.endswith(".pkl") else pkl_path
+    csv_path = base_no_ext + ".csv"
     if os.path.exists(csv_path):
         csv_data = pd.read_csv(csv_path)
         data_dict = {**csv_data.to_dict(orient="list"), **pkl_data}
@@ -70,6 +82,60 @@ def load_data(file_path):
         data_dict[key] = np.array(data_dict[key])
 
     return data_dict
+
+
+def find_mafat_files(raw_dir):
+    """Auto-discover MAFAT data files in the raw directory.
+
+    Supports multiple naming conventions:
+    - Competition download: training_set, mini_training_set
+    - Old naming: MAFAT RADAR Challenge - Training Set V1.pkl, etc.
+    - Any .pkl file in the directory
+
+    Returns:
+        List of file paths (without extension) that were found.
+    """
+    known_names = [
+        # Competition zip structure (what users actually download)
+        "training_set",
+        "mini_training_set",
+        # Auxiliary/test sets
+        "auxiliary_experiment_set",
+        "synthetic_set",
+        "public_test_set",
+        # Old long-form names from some repos
+        "MAFAT RADAR Challenge - Training Set V1",
+        "MAFAT RADAR Challenge - Auxiliary Experiment Set V2",
+        "MAFAT RADAR Challenge - Auxiliary Synthetic Set V2",
+        "MAFAT RADAR Challenge - FULL Public Test Set V1",
+    ]
+
+    found = []
+    for name in known_names:
+        path = os.path.join(raw_dir, name)
+        if os.path.exists(path) or os.path.exists(path + ".pkl"):
+            found.append(path)
+
+    # Also scan for any .pkl files not in the known list
+    if os.path.isdir(raw_dir):
+        for f in os.listdir(raw_dir):
+            if f.endswith(".pkl"):
+                base = os.path.join(raw_dir, f[:-4])
+                if base not in found:
+                    found.append(base)
+            elif not f.endswith(".csv") and os.path.isfile(os.path.join(raw_dir, f)):
+                # Files without extension (like "training_set")
+                full = os.path.join(raw_dir, f)
+                if full not in found:
+                    # Quick check: try to open as pickle
+                    try:
+                        with open(full, "rb") as fh:
+                            pickle.load(fh)
+                        found.append(full)
+                    except Exception:
+                        pass
+
+    return found
 
 
 # ---------------------------------------------------------------------------
@@ -136,48 +202,54 @@ def ensure_mafat_data(raw_dir):
     """Check that raw MAFAT data files exist, print download instructions if not."""
     os.makedirs(raw_dir, exist_ok=True)
 
-    train_pkl = os.path.join(raw_dir, "MAFAT RADAR Challenge - Training Set V1.pkl")
-    aux_pkl = os.path.join(raw_dir, "MAFAT RADAR Challenge - Auxiliary Experiment Set V2.pkl")
-
-    if os.path.exists(train_pkl) or os.path.exists(aux_pkl):
-        print("MAFAT data files found.")
-        return
+    found = find_mafat_files(raw_dir)
+    if found:
+        print(f"MAFAT data files found: {[os.path.basename(f) for f in found]}")
+        return found
 
     print("=" * 70)
-    print("MAFAT Radar Challenge Dataset - Download Required")
+    print("MAFAT Radar Challenge Dataset - No data files found")
     print("=" * 70)
     print()
-    print("The original CodaLab competition page is no longer active.")
-    print("To obtain the MAFAT radar dataset, try these options:")
+    print(f"Place your data files in: {os.path.abspath(raw_dir)}")
     print()
-    print("Option 1 - CodaLab (may still work):")
-    print("  1. Register at: https://competitions.codalab.org/competitions/25389")
-    print("  2. Navigate to Participate > Files to download the data bundles")
+    print("Expected files from the competition download:")
+    print("  train_data_for_competition.zip containing:")
+    print("    - training_set          (main training data, ~17GB)")
+    print("    - mini_training_set     (smaller subset, ~1.6GB)")
     print()
-    print("Option 2 - Contact organizers:")
-    print("  Email the MAFAT Challenge team via https://mafatchallenge.mod.gov.il/")
-    print("  to request access to the archived radar challenge data.")
-    print()
-    print("Option 3 - Check GitHub repos for cached copies:")
-    print("  https://github.com/topics/mafat-radar-challenge")
-    print()
-    print("Expected files (place in {}):.".format(os.path.abspath(raw_dir)))
-    print("  - MAFAT RADAR Challenge - Training Set V1.pkl  (+ .csv)")
-    print("  - MAFAT RADAR Challenge - Auxiliary Experiment Set V2.pkl  (+ .csv)")
+    print("Steps:")
+    print("  1. Extract the zip file")
+    print("  2. Copy training_set and/or mini_training_set into the directory above")
+    print("  3. Re-run this script")
     print()
     print("For immediate testing, use synthetic data instead:")
     print("  python -m data_dir.process_mafat --synthetic")
     print("=" * 70)
     raise FileNotFoundError(
         f"MAFAT data files not found in {raw_dir}. "
-        "Please download them manually (see instructions above) "
-        "or use --synthetic for testing."
+        "See instructions above or use --synthetic for testing."
     )
 
 
 # ---------------------------------------------------------------------------
 # Processing modes
 # ---------------------------------------------------------------------------
+
+def _extract_labels(data_dict):
+    """Extract binary labels from a MAFAT data dictionary.
+
+    Handles both string labels ('human'/'animal') and integer labels (1/0).
+    """
+    labels = data_dict["target_type"]
+    result = []
+    for label in labels:
+        if isinstance(label, str):
+            result.append(1 if label == "human" else 0)
+        else:
+            result.append(int(label))
+    return result
+
 
 def process_mafat_iq(raw_dir, save_dir):
     """Process MAFAT data in raw I/Q mode.
@@ -193,46 +265,41 @@ def process_mafat_iq(raw_dir, save_dir):
         print("Processed MAFAT I/Q data already exists, skipping.")
         return
 
-    train_base = os.path.join(raw_dir, "MAFAT RADAR Challenge - Training Set V1")
-    aux_base = os.path.join(raw_dir, "MAFAT RADAR Challenge - Auxiliary Experiment Set V2")
+    data_files = find_mafat_files(raw_dir)
+    if not data_files:
+        raise FileNotFoundError(f"No MAFAT data files found in {raw_dir}")
 
     all_data = []
     all_labels = []
 
-    for base_path in [train_base, aux_base]:
-        if not os.path.exists(base_path + ".pkl"):
-            print(f"Warning: {base_path}.pkl not found, skipping.")
+    for file_path in data_files:
+        print(f"Loading {os.path.basename(file_path)}...")
+        data_dict = load_data(file_path)
+
+        if "iq_sweep_burst" not in data_dict:
+            print(f"  Warning: no 'iq_sweep_burst' key found, skipping.")
+            continue
+        if "target_type" not in data_dict:
+            print(f"  Warning: no 'target_type' key found (unlabeled data), skipping.")
             continue
 
-        print(f"Loading {os.path.basename(base_path)}...")
-        data_dict = load_data(base_path)
-
         iq_sweep = data_dict["iq_sweep_burst"]  # (n_segments, 128, 32) complex
-        labels = data_dict["target_type"]  # string or int labels
-        n_segments = iq_sweep.shape[0]
+        print(f"  Shape: {iq_sweep.shape}, dtype: {iq_sweep.dtype}")
 
-        for i in range(n_segments):
-            segment = iq_sweep[i]  # (128, 32) complex
+        # Average across range bins (axis=1) → (n_segments, 32) complex
+        mean_signals = np.mean(iq_sweep, axis=1)
+        # Stack real/imag → (n_segments, 32, 2)
+        iq_pairs = np.stack(
+            [np.real(mean_signals), np.imag(mean_signals)], axis=-1
+        ).astype(np.float32)
 
-            # Average across range bins (axis=0) → (32,) complex slow-time signal
-            mean_signal = np.mean(segment, axis=0)  # (32,) complex
-
-            iq_pair = np.stack(
-                [np.real(mean_signal), np.imag(mean_signal)], axis=-1
-            )  # (32, 2)
-            all_data.append(iq_pair)
-
-            # Handle string or int labels
-            label = labels[i]
-            if isinstance(label, str):
-                all_labels.append(1 if label == "human" else 0)
-            else:
-                all_labels.append(int(label))
+        all_data.append(iq_pairs)
+        all_labels.extend(_extract_labels(data_dict))
 
     if len(all_data) == 0:
-        raise FileNotFoundError("No MAFAT data files found. Cannot process.")
+        raise FileNotFoundError("No valid MAFAT data files found. Cannot process.")
 
-    data = np.array(all_data, dtype=np.float32)  # (N, 32, 2)
+    data = np.concatenate(all_data, axis=0)  # (N, 32, 2)
     labels = np.array(all_labels, dtype=np.int32)  # (N,)
 
     # Normalize to [-1, 1]
@@ -265,37 +332,33 @@ def process_mafat_fft(raw_dir, save_dir):
         print("Processed MAFAT FFT data already exists, skipping.")
         return
 
-    train_base = os.path.join(raw_dir, "MAFAT RADAR Challenge - Training Set V1")
-    aux_base = os.path.join(raw_dir, "MAFAT RADAR Challenge - Auxiliary Experiment Set V2")
+    data_files = find_mafat_files(raw_dir)
+    if not data_files:
+        raise FileNotFoundError(f"No MAFAT data files found in {raw_dir}")
 
     all_data = []
     all_labels = []
 
-    for base_path in [train_base, aux_base]:
-        if not os.path.exists(base_path + ".pkl"):
-            print(f"Warning: {base_path}.pkl not found, skipping.")
+    for file_path in data_files:
+        print(f"Loading {os.path.basename(file_path)}...")
+        data_dict = load_data(file_path)
+
+        if "iq_sweep_burst" not in data_dict:
+            print(f"  Warning: no 'iq_sweep_burst' key found, skipping.")
+            continue
+        if "target_type" not in data_dict:
+            print(f"  Warning: no 'target_type' key found (unlabeled data), skipping.")
             continue
 
-        print(f"Loading {os.path.basename(base_path)}...")
-        data_dict = load_data(base_path)
+        print(f"  Shape: {data_dict['iq_sweep_burst'].shape}")
 
         # Apply full FFT preprocessing
         processed = data_preprocess_fft(data_dict)  # (n_segments, 126, 32)
-        labels = data_dict["target_type"]
-
         all_data.append(processed)
-
-        # Handle string or int labels
-        seg_labels = []
-        for label in labels:
-            if isinstance(label, str):
-                seg_labels.append(1 if label == "human" else 0)
-            else:
-                seg_labels.append(int(label))
-        all_labels.extend(seg_labels)
+        all_labels.extend(_extract_labels(data_dict))
 
     if len(all_data) == 0:
-        raise FileNotFoundError("No MAFAT data files found. Cannot process.")
+        raise FileNotFoundError("No valid MAFAT data files found. Cannot process.")
 
     data = np.concatenate(all_data, axis=0).astype(np.float32)  # (N, 126, 32)
     labels = np.array(all_labels, dtype=np.int32)
@@ -464,6 +527,10 @@ if __name__ == "__main__":
         generate_synthetic_mafat_data(save_dir)
     else:
         ensure_mafat_data(raw_dir)
+        # Remove stale processed data if re-processing
+        stale = os.path.join(save_dir, "data.pkl")
+        if os.path.exists(stale):
+            print(f"Note: {stale} already exists. Delete it to re-process.")
         if args.mode == "iq":
             process_mafat_iq(raw_dir, save_dir)
         elif args.mode == "fft":
