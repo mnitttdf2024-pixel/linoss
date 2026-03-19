@@ -388,9 +388,14 @@ def _generate_synthetic_iq_segments(n_samples, rng, target_type="human"):
     - 32 slow-time pulses (pulse repetition axis)
     - Complex-valued I/Q signal
 
-    Humans get a walking-gait micro-Doppler (~2-4 Hz oscillation in slow-time
-    spread across multiple range bins). Animals get a different pattern
-    (~6-10 Hz, narrower range spread).
+    Parameters are drawn from overlapping distributions so that the classes
+    are NOT trivially separable.  The key statistical differences are:
+      - Humans: lower mean gait frequency, wider range spread, more harmonics
+      - Animals: higher mean gait frequency, narrower range spread, fewer harmonics
+    but every individual parameter range overlaps significantly between classes.
+
+    Variable SNR (some segments are nearly buried in noise) adds further
+    difficulty, mirroring real-world radar conditions.
     """
     n_range = 128
     n_slow = 32
@@ -400,24 +405,21 @@ def _generate_synthetic_iq_segments(n_samples, rng, target_type="human"):
     range_bins = np.arange(n_range)
 
     for _ in range(n_samples):
-        # Background clutter + noise
-        clutter = 0.1 * (rng.randn(n_range, n_slow) + 1j * rng.randn(n_range, n_slow))
-
         # Target signal centered at a random range bin
         center_bin = rng.randint(30, 100)
 
         if target_type == "human":
-            # Human: walking gait → multiple micro-Doppler harmonics, wider spread
-            freq = rng.uniform(2.0, 4.0)
-            spread = rng.uniform(8, 15)
-            amplitude = rng.uniform(0.5, 1.5)
-            n_harmonics = 3
+            # Human: bipedal gait, mean ~3.5 Hz, wider spread, 2-3 harmonics
+            freq = rng.uniform(2.0, 6.0)
+            spread = rng.uniform(5, 15)
+            amplitude = rng.uniform(0.3, 1.2)
+            n_harmonics = rng.choice([2, 3], p=[0.3, 0.7])
         else:
-            # Animal: quadruped gait → different frequency, narrower spread
-            freq = rng.uniform(6.0, 10.0)
-            spread = rng.uniform(3, 7)
-            amplitude = rng.uniform(0.3, 1.0)
-            n_harmonics = 2
+            # Animal: quadruped gait, mean ~6.5 Hz, narrower spread, 1-2 harmonics
+            freq = rng.uniform(4.0, 10.0)
+            spread = rng.uniform(3, 10)
+            amplitude = rng.uniform(0.2, 1.0)
+            n_harmonics = rng.choice([1, 2], p=[0.3, 0.7])
 
         # Range profile (Gaussian around center)
         range_profile = np.exp(-0.5 * ((range_bins - center_bin) / spread) ** 2)
@@ -432,6 +434,13 @@ def _generate_synthetic_iq_segments(n_samples, rng, target_type="human"):
 
         # Combine: outer product of range profile and slow-time signal
         target = range_profile[:, None] * doppler_signal[None, :]
+
+        # Variable SNR: noise_level drawn so some segments are very noisy
+        noise_level = rng.uniform(0.3, 1.5)
+        clutter = noise_level * (
+            rng.randn(n_range, n_slow) + 1j * rng.randn(n_range, n_slow)
+        )
+
         segment = clutter + target
         segments.append(segment)
 
