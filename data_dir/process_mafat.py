@@ -63,14 +63,16 @@ def load_data(file_path):
         pkl_path = file_path
     elif os.path.exists(file_path + ".pkl"):
         pkl_path = file_path + ".pkl"
+    elif os.path.exists(file_path + ".db"):
+        pkl_path = file_path + ".db"
     else:
-        raise FileNotFoundError(f"Cannot find data file: {file_path} or {file_path}.pkl")
+        raise FileNotFoundError(f"Cannot find data file: {file_path}, {file_path}.pkl, or {file_path}.db")
 
     with open(pkl_path, "rb") as f:
         pkl_data = pickle.load(f)
 
     # Try to load companion CSV metadata
-    base_no_ext = os.path.splitext(pkl_path)[0] if pkl_path.endswith(".pkl") else pkl_path
+    base_no_ext = os.path.splitext(pkl_path)[0] if pkl_path.endswith((".pkl", ".db")) else pkl_path
     csv_path = base_no_ext + ".csv"
     if os.path.exists(csv_path):
         csv_data = pd.read_csv(csv_path)
@@ -113,14 +115,14 @@ def find_mafat_files(raw_dir):
     found = []
     for name in known_names:
         path = os.path.join(raw_dir, name)
-        if os.path.exists(path) or os.path.exists(path + ".pkl"):
+        if os.path.exists(path) or os.path.exists(path + ".pkl") or os.path.exists(path + ".db"):
             found.append(path)
 
-    # Also scan for any .pkl files not in the known list
+    # Also scan for any .pkl or .db files not in the known list
     if os.path.isdir(raw_dir):
         for f in os.listdir(raw_dir):
-            if f.endswith(".pkl"):
-                base = os.path.join(raw_dir, f[:-4])
+            if f.endswith(".pkl") or f.endswith(".db"):
+                base = os.path.join(raw_dir, os.path.splitext(f)[0])
                 if base not in found:
                     found.append(base)
             elif not f.endswith(".csv") and os.path.isfile(os.path.join(raw_dir, f)):
