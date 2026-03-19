@@ -139,29 +139,39 @@ def ensure_mafat_data(raw_dir):
     train_pkl = os.path.join(raw_dir, "MAFAT RADAR Challenge - Training Set V1.pkl")
     aux_pkl = os.path.join(raw_dir, "MAFAT RADAR Challenge - Auxiliary Experiment Set V2.pkl")
 
-    if os.path.exists(train_pkl) and os.path.exists(aux_pkl):
+    if os.path.exists(train_pkl) or os.path.exists(aux_pkl):
         print("MAFAT data files found.")
         return
 
     print("=" * 70)
-    print("MAFAT Radar Challenge Dataset - Manual Download Required")
+    print("MAFAT Radar Challenge Dataset - Download Required")
     print("=" * 70)
     print()
-    print("The MAFAT dataset requires manual download from the competition page.")
+    print("The original CodaLab competition page is no longer active.")
+    print("To obtain the MAFAT radar dataset, try these options:")
     print()
-    print("Steps:")
-    print("1. Go to: https://competitions.codalab.org/competitions/25389#participate")
-    print("2. Download the following file pairs (.pkl + .csv each):")
-    print("   - MAFAT RADAR Challenge - Training Set V1")
-    print("   - MAFAT RADAR Challenge - Auxiliary Experiment Set V2")
-    print(f"3. Place all downloaded files in: {os.path.abspath(raw_dir)}")
+    print("Option 1 - CodaLab (may still work):")
+    print("  1. Register at: https://competitions.codalab.org/competitions/25389")
+    print("  2. Navigate to Participate > Files to download the data bundles")
     print()
-    print("Alternatively, generate synthetic data for testing:")
-    print("   python -m data_dir.process_mafat --synthetic")
+    print("Option 2 - Contact organizers:")
+    print("  Email the MAFAT Challenge team via https://mafatchallenge.mod.gov.il/")
+    print("  to request access to the archived radar challenge data.")
+    print()
+    print("Option 3 - Check GitHub repos for cached copies:")
+    print("  https://github.com/topics/mafat-radar-challenge")
+    print()
+    print("Expected files (place in {}):.".format(os.path.abspath(raw_dir)))
+    print("  - MAFAT RADAR Challenge - Training Set V1.pkl  (+ .csv)")
+    print("  - MAFAT RADAR Challenge - Auxiliary Experiment Set V2.pkl  (+ .csv)")
+    print()
+    print("For immediate testing, use synthetic data instead:")
+    print("  python -m data_dir.process_mafat --synthetic")
     print("=" * 70)
     raise FileNotFoundError(
         f"MAFAT data files not found in {raw_dir}. "
-        "Please download them manually (see instructions above)."
+        "Please download them manually (see instructions above) "
+        "or use --synthetic for testing."
     )
 
 
@@ -305,37 +315,104 @@ def process_mafat_fft(raw_dir, save_dir):
 # Synthetic data for testing
 # ---------------------------------------------------------------------------
 
-def generate_synthetic_mafat_data(save_dir, n_samples=3000, seq_len=32, seed=42):
-    """Generate synthetic radar-like I/Q data for testing the pipeline.
+def _generate_synthetic_iq_segments(n_samples, rng, target_type="human"):
+    """Generate synthetic 128x32 complex I/Q radar segments.
 
-    Creates (n_samples, seq_len, 2) data with binary labels.
-    Humans get a higher-frequency micro-Doppler signature than animals.
+    Mimics the real MAFAT data structure:
+    - 128 range bins (fast-time / range-velocity axis)
+    - 32 slow-time pulses (pulse repetition axis)
+    - Complex-valued I/Q signal
+
+    Humans get a walking-gait micro-Doppler (~2-4 Hz oscillation in slow-time
+    spread across multiple range bins). Animals get a different pattern
+    (~6-10 Hz, narrower range spread).
+    """
+    n_range = 128
+    n_slow = 32
+    segments = []
+
+    slow_t = np.linspace(0, 1, n_slow)
+    range_bins = np.arange(n_range)
+
+    for _ in range(n_samples):
+        # Background clutter + noise
+        clutter = 0.1 * (rng.randn(n_range, n_slow) + 1j * rng.randn(n_range, n_slow))
+
+        # Target signal centered at a random range bin
+        center_bin = rng.randint(30, 100)
+
+        if target_type == "human":
+            # Human: walking gait → multiple micro-Doppler harmonics, wider spread
+            freq = rng.uniform(2.0, 4.0)
+            spread = rng.uniform(8, 15)
+            amplitude = rng.uniform(0.5, 1.5)
+            n_harmonics = 3
+        else:
+            # Animal: quadruped gait → different frequency, narrower spread
+            freq = rng.uniform(6.0, 10.0)
+            spread = rng.uniform(3, 7)
+            amplitude = rng.uniform(0.3, 1.0)
+            n_harmonics = 2
+
+        # Range profile (Gaussian around center)
+        range_profile = np.exp(-0.5 * ((range_bins - center_bin) / spread) ** 2)
+
+        # Slow-time micro-Doppler signal with harmonics
+        doppler_signal = np.zeros(n_slow, dtype=complex)
+        for h in range(1, n_harmonics + 1):
+            phase = rng.uniform(0, 2 * np.pi)
+            doppler_signal += (amplitude / h) * np.exp(
+                1j * (2 * np.pi * freq * h * slow_t + phase)
+            )
+
+        # Combine: outer product of range profile and slow-time signal
+        target = range_profile[:, None] * doppler_signal[None, :]
+        segment = clutter + target
+        segments.append(segment)
+
+    return np.array(segments)
+
+
+def generate_synthetic_mafat_data(save_dir, n_samples=3000, seed=42):
+    """Generate synthetic radar I/Q data mimicking the real MAFAT format.
+
+    Generates full 128x32 complex I/Q matrices (like real data), then
+    processes them through the same I/Q averaging pipeline to produce
+    the final (n_samples, 32, 2) output.
+
+    Args:
+        save_dir: Directory to save processed data.
+        n_samples: Total number of samples (split equally between classes).
+        seed: Random seed for reproducibility.
     """
     rng = np.random.RandomState(seed)
 
     n_human = n_samples // 2
     n_animal = n_samples - n_human
-    t = np.linspace(0, 1, seq_len)
 
-    # Human: higher frequency micro-Doppler
-    human_real = np.sin(2 * np.pi * 5 * t[None, :]) + 0.3 * rng.randn(n_human, seq_len)
-    human_imag = np.cos(2 * np.pi * 5 * t[None, :]) + 0.3 * rng.randn(n_human, seq_len)
-    human_iq = np.stack([human_real, human_imag], axis=-1)
-    human_labels = np.ones(n_human, dtype=np.int32)
+    print("Generating synthetic human radar segments...")
+    human_segments = _generate_synthetic_iq_segments(n_human, rng, "human")
+    print("Generating synthetic animal radar segments...")
+    animal_segments = _generate_synthetic_iq_segments(n_animal, rng, "animal")
 
-    # Animal: lower frequency pattern
-    animal_real = np.sin(2 * np.pi * 1.5 * t[None, :]) + 0.3 * rng.randn(n_animal, seq_len)
-    animal_imag = np.cos(2 * np.pi * 1.5 * t[None, :]) + 0.3 * rng.randn(n_animal, seq_len)
-    animal_iq = np.stack([animal_real, animal_imag], axis=-1)
-    animal_labels = np.zeros(n_animal, dtype=np.int32)
+    all_segments = np.concatenate([human_segments, animal_segments], axis=0)
+    labels = np.concatenate([
+        np.ones(n_human, dtype=np.int32),
+        np.zeros(n_animal, dtype=np.int32),
+    ])
 
-    data = np.concatenate([human_iq, animal_iq], axis=0)
-    labels = np.concatenate([human_labels, animal_labels], axis=0)
-
-    perm = rng.permutation(len(data))
-    data = data[perm]
+    # Shuffle
+    perm = rng.permutation(len(all_segments))
+    all_segments = all_segments[perm]
     labels = labels[perm]
 
+    # Process through the same I/Q pipeline as real data:
+    # Average across range bins (axis=1 of 128x32) → (32,) complex → (32, 2) real/imag
+    mean_signals = np.mean(all_segments, axis=1)  # (N, 32) complex
+    data = np.stack([np.real(mean_signals), np.imag(mean_signals)], axis=-1)  # (N, 32, 2)
+    data = data.astype(np.float32)
+
+    # Normalize to [-1, 1]
     data_max = np.abs(data).max()
     if data_max > 0:
         data = data / data_max
@@ -346,7 +423,9 @@ def generate_synthetic_mafat_data(save_dir, n_samples=3000, seq_len=32, seed=42)
     os.makedirs(save_dir, exist_ok=True)
     save_pickle(data, os.path.join(save_dir, "data.pkl"))
     save_pickle(labels, os.path.join(save_dir, "labels.pkl"))
+
     print(f"Saved synthetic MAFAT data: {data.shape}, labels: {labels.shape}")
+    print(f"  Class balance: {dict(zip(*np.unique(np.array(labels), return_counts=True)))}")
     print(f"  -> {save_dir}")
 
 
