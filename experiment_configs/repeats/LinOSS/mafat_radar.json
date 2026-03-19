@@ -7,7 +7,7 @@
         6789
     ],
     "data_dir": "data_dir",
-    "output_parent_dir": "",
+    "output_parent_dir": "outputs",
     "lr_scheduler": "lambda lr: lr",
     "num_steps": 100000,
     "print_steps": 1000,

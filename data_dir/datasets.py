@@ -434,12 +434,14 @@ def create_dataset(
     *,
     key,
 ):
+    uea_path = data_dir + "/processed/UEA"
     uea_subfolders = [
-        f.name for f in os.scandir(data_dir + "/processed/UEA") if f.is_dir()
-    ]
+        f.name for f in os.scandir(uea_path) if f.is_dir()
+    ] if os.path.isdir(uea_path) else []
+    toy_path = data_dir + "/processed/toy"
     toy_subfolders = [
-        f.name for f in os.scandir(data_dir + "/processed/toy") if f.is_dir()
-    ]
+        f.name for f in os.scandir(toy_path) if f.is_dir()
+    ] if os.path.isdir(toy_path) else []
 
     if name in uea_subfolders:
         return create_uea_dataset(
