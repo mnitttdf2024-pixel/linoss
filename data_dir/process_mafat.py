@@ -388,14 +388,25 @@ def _generate_synthetic_iq_segments(n_samples, rng, target_type="human"):
     - 32 slow-time pulses (pulse repetition axis)
     - Complex-valued I/Q signal
 
-    Parameters are drawn from overlapping distributions so that the classes
-    are NOT trivially separable.  The key statistical differences are:
-      - Humans: lower mean gait frequency, wider range spread, more harmonics
-      - Animals: higher mean gait frequency, narrower range spread, fewer harmonics
-    but every individual parameter range overlaps significantly between classes.
+    Based on micro-Doppler radar literature:
+    - Human bipedal stride rate ~0.8-1.2 Hz with harmonics up to ~5 Hz.
+      Max limb (toe) velocity ~4.5 m/s. Arm swing adds extra harmonics.
+      Wider range spread due to upright posture (~1.7m height).
+    - Animal quadruped stride rate ~1.5-3.0 Hz with harmonics up to ~8 Hz.
+      Four-leg coordination creates denser but lower-amplitude harmonics.
+      Narrower range spread due to lower body profile.
 
-    Variable SNR (some segments are nearly buried in noise) adds further
-    difficulty, mirroring real-world radar conditions.
+    Key real-world challenge from MAFAT competition: most animals were
+    recorded at low SNR and most humans at high SNR, creating a spurious
+    correlation. We replicate this bias (humans tend higher SNR, animals
+    tend lower) while still allowing overlap, so the model must learn
+    actual micro-Doppler features rather than just noise level.
+
+    References:
+    - Chen, V.C. "The Micro-Doppler Effect in Radar"
+    - MAFAT Radar Challenge (CodaLab 25389)
+    - PMC 7506689: limb micro-Doppler at mm-wave
+    - PMC 9105660: pedestrian/animal classification
     """
     n_range = 128
     n_slow = 32
@@ -409,35 +420,59 @@ def _generate_synthetic_iq_segments(n_samples, rng, target_type="human"):
         center_bin = rng.randint(30, 100)
 
         if target_type == "human":
-            # Human: bipedal gait, mean ~3.5 Hz, wider spread, 2-3 harmonics
-            freq = rng.uniform(2.0, 6.0)
-            spread = rng.uniform(5, 15)
-            amplitude = rng.uniform(0.3, 1.2)
-            n_harmonics = rng.choice([2, 3], p=[0.3, 0.7])
+            # Bipedal gait: stride ~0.8-1.2 Hz, micro-Doppler harmonics up to ~5 Hz
+            stride_freq = rng.uniform(0.8, 1.2)
+            # Humans have 2-4 significant harmonics (legs + arm swing + torso bob)
+            n_harmonics = rng.choice([2, 3, 4], p=[0.2, 0.5, 0.3])
+            # Wider range spread: upright posture, ~1.5-1.8m height
+            spread = rng.uniform(8, 18)
+            # Amplitude per harmonic (fundamental strongest)
+            base_amplitude = rng.uniform(0.4, 1.2)
+            # Harmonic decay: arms/legs produce stronger higher harmonics
+            harmonic_decay = rng.uniform(0.5, 0.8)
+            # SNR bias from real data: humans tend to have higher SNR
+            snr_db = rng.normal(15, 8)  # mean 15 dB, std 8 dB
         else:
-            # Animal: quadruped gait, mean ~6.5 Hz, narrower spread, 1-2 harmonics
-            freq = rng.uniform(4.0, 10.0)
+            # Quadruped gait: stride ~1.5-3.0 Hz (faster leg turnover)
+            stride_freq = rng.uniform(1.5, 3.0)
+            # Animals have 1-3 harmonics (four legs but more regular pattern)
+            n_harmonics = rng.choice([1, 2, 3], p=[0.2, 0.5, 0.3])
+            # Narrower range spread: lower body profile
             spread = rng.uniform(3, 10)
-            amplitude = rng.uniform(0.2, 1.0)
-            n_harmonics = rng.choice([1, 2], p=[0.3, 0.7])
+            # Generally weaker returns (smaller radar cross section)
+            base_amplitude = rng.uniform(0.2, 0.8)
+            # Faster harmonic decay: more uniform leg motion
+            harmonic_decay = rng.uniform(0.3, 0.6)
+            # SNR bias from real data: animals tend to have lower SNR
+            snr_db = rng.normal(5, 8)  # mean 5 dB, std 8 dB
+
+        # Clamp SNR to physically reasonable range (-5 to 30 dB)
+        snr_db = np.clip(snr_db, -5, 30)
 
         # Range profile (Gaussian around center)
         range_profile = np.exp(-0.5 * ((range_bins - center_bin) / spread) ** 2)
 
-        # Slow-time micro-Doppler signal with harmonics
+        # Slow-time micro-Doppler signal with harmonics of stride frequency
         doppler_signal = np.zeros(n_slow, dtype=complex)
         for h in range(1, n_harmonics + 1):
             phase = rng.uniform(0, 2 * np.pi)
-            doppler_signal += (amplitude / h) * np.exp(
-                1j * (2 * np.pi * freq * h * slow_t + phase)
+            amp = base_amplitude * (harmonic_decay ** (h - 1))
+            doppler_signal += amp * np.exp(
+                1j * (2 * np.pi * stride_freq * h * slow_t + phase)
             )
 
         # Combine: outer product of range profile and slow-time signal
         target = range_profile[:, None] * doppler_signal[None, :]
 
-        # Variable SNR: noise_level drawn so some segments are very noisy
-        noise_level = rng.uniform(0.3, 1.5)
-        clutter = noise_level * (
+        # Convert SNR (dB) to noise level relative to signal
+        signal_power = np.mean(np.abs(target) ** 2)
+        if signal_power > 0:
+            noise_power = signal_power / (10 ** (snr_db / 10))
+            noise_std = np.sqrt(noise_power / 2)  # /2 for real+imag parts
+        else:
+            noise_std = 0.5
+
+        clutter = noise_std * (
             rng.randn(n_range, n_slow) + 1j * rng.randn(n_range, n_slow)
         )
 
